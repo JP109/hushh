@@ -34,15 +34,30 @@ wss.on("connection", (ws) => {
   ws.on("message", (data) => {
     if (!clients.has(ws)) return;
 
-    const { authKey } = clients.get(ws);
+    const { authKey, authKeyId } = clients.get(ws);
 
     const buf = Buffer.from(data);
     const msgKey = buf.subarray(8, 24);
     const ciphertext = buf.subarray(24);
 
-    const { aesKey, aesIV } = deriveAESKeyAndIV(authKey, msgKey);
+    const { aesKey, aesIV } = deriveAESKeyAndIV(authKey, msgKey, false);
     const plaintext = aesIgeDecrypt(ciphertext, aesKey, aesIV);
+    const message = plaintext.toString("utf-8");
 
-    console.log("📩 Message:", plaintext.toString());
+    console.log("📩 Client says:", message);
+
+    // 🔁 Encrypt response
+    const replyText = Buffer.from(`You said: ${message}`, "utf-8");
+    const replyMsgKey = computeMsgKey(authKey, replyText);
+    const { aesKey: aesKeyResp, aesIV: aesIVResp } = deriveAESKeyAndIV(
+      authKey,
+      replyMsgKey,
+      true
+    );
+    const encryptedReply = aesIgeEncrypt(replyText, aesKeyResp, aesIVResp);
+
+    const frame = Buffer.concat([authKeyId, replyMsgKey, encryptedReply]);
+
+    ws.send(frame);
   });
 });
