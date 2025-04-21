@@ -10,8 +10,18 @@ export const MODP_P = BigInt(
     "E485B576625E7EC6F44C42E9A63A3620FFFFFFFFFFFFFFFF"
 );
 
-export function modPow(base, exp, mod) {
-  return base ** exp % mod;
+export function modPow(base, exponent, modulus) {
+  if (modulus === 1n) return 0n;
+  let result = 1n;
+  base = base % modulus;
+  while (exponent > 0n) {
+    if (exponent % 2n === 1n) {
+      result = (result * base) % modulus;
+    }
+    exponent = exponent >> 1n; // divide by 2
+    base = (base * base) % modulus;
+  }
+  return result;
 }
 
 export function randomBigInt(nBytes = 256) {
