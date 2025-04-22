@@ -58,35 +58,59 @@ wss.on("connection", (ws) => {
     const msgKey = buf.subarray(8, 24);
     const ciphertext = buf.subarray(24);
 
-    // 🔓 Decrypt incoming message from client
+    // Decrypt incoming message from client
     const { aesKey, aesIV } = deriveAESKeyAndIV(authKey, msgKey, false);
     const plaintext = aesIgeDecrypt(ciphertext, aesKey, aesIV);
 
     // Extract TL header from client message
-    const clientSalt = plaintext.subarray(0, 8);
-    const clientSession = plaintext.subarray(8, 16);
-    const clientMsgId = plaintext.subarray(16, 24);
-    const clientSeqNo = plaintext.subarray(24, 28);
-    const messageBody = plaintext.subarray(32);
-
-    const clientText = messageBody
+    const clientText = plaintext
+      .subarray(32)
       .toString("utf-8")
       .replace(/[\u0000-\u001F\u007F-\uFFFF]+$/g, "");
     console.log("📩 Client says:", clientText);
 
-    // 🔁 Construct TL-structured reply
-    const replyText = Buffer.from(`You said: ${clientText}`, "utf-8");
-    const msgId = generateMsgId();
-    const seqno = client.seqno;
+    // ------------------------------
+    // Create TL-style inner message
+    // ------------------------------
+
+    const replyBody = Buffer.from(`You said: ${clientText}`, "utf-8");
+    const innerMsgId = generateMsgId();
+    const innerSeqNo = client.seqno;
     client.seqno += 2;
 
-    const header = Buffer.alloc(32);
-    serverSalt.copy(header, 0); // 0–7
-    sessionId.copy(header, 8); // 8–15
-    header.writeBigUInt64LE(msgId, 16); // 16–23
-    header.writeUInt32LE(seqno, 24); // 24–27
+    const innerHeader = Buffer.alloc(16);
+    innerHeader.writeBigUInt64LE(innerMsgId, 0); // msg_id
+    innerHeader.writeUInt32LE(innerSeqNo, 8); // seqno
+    innerHeader.writeUInt32LE(replyBody.length, 12); // body length
 
-    const fullPlaintext = Buffer.concat([header, replyText]);
+    const innerMessage = Buffer.concat([innerHeader, replyBody]); // 16-byte header + body
+
+    // ------------------------------
+    // 📦 Wrap in msg_container
+    // ------------------------------
+
+    const containerConstructor = Buffer.from("dcf8f173", "hex").reverse(); // #73f1f8dc
+    const count = Buffer.alloc(4);
+    count.writeUInt32LE(1, 0); // 1 message
+    const fullBody = Buffer.concat([containerConstructor, count, innerMessage]);
+
+    // ------------------------------
+    // 🚀 Wrap in outer TL header (salt, session_id, etc.)
+    // ------------------------------
+
+    const outerMsgId = generateMsgId();
+    const outerSeqno = client.seqno;
+    client.seqno += 2;
+
+    const outerHeader = Buffer.alloc(32);
+    serverSalt.copy(outerHeader, 0);
+    sessionId.copy(outerHeader, 8);
+    outerHeader.writeBigUInt64LE(outerMsgId, 16);
+    outerHeader.writeUInt32LE(outerSeqno, 24);
+
+    const fullPlaintext = Buffer.concat([outerHeader, fullBody]);
+
+    // Encrypt and send
     const replyMsgKey = computeMsgKey(authKey, fullPlaintext);
     const { aesKey: aesKeyResp, aesIV: aesIVResp } = deriveAESKeyAndIV(
       authKey,
