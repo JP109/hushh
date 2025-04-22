@@ -49,8 +49,18 @@ export default function ChatWindow() {
         msgKey
       );
       const decrypted = await aesIgeDecrypt(encrypted, aesKey, aesIV);
-      console.log("Decrypted", new TextDecoder().decode(decrypted));
-      setMessages((msgs) => [...msgs, new TextDecoder().decode(decrypted)]);
+
+      // strip TL header (32 bytes)
+      const serverSalt = decrypted.slice(0, 8);
+      const sessionId = decrypted.slice(8, 16);
+      const msgId = decrypted.slice(16, 24);
+      const seqno = decrypted.slice(24, 28);
+      const message = decrypted.slice(32);
+
+      const clean = new TextDecoder()
+        .decode(message)
+        .replace(/[\u0000-\u001F\u007F-\uFFFF]+$/g, "");
+      setMessages((msgs) => [...msgs, clean]);
     });
 
     window._mtproto = socket;
@@ -58,11 +68,20 @@ export default function ChatWindow() {
 
   const sendMessage = async () => {
     const socket = window._mtproto;
-    const plaintext = new TextEncoder().encode(input);
-    const msgKey = await computeMsgKey(authKey, plaintext);
+    const text = new TextEncoder().encode(input);
+
+    // Simulate TL header (placeholder salt/session/msg_id)
+    const header = new Uint8Array(32);
+    // You can leave all-zero salt/session_id/msg_id for now
+    const fullMessage = new Uint8Array(header.length + text.length);
+    fullMessage.set(header);
+    fullMessage.set(text, 32);
+
+    const msgKey = await computeMsgKey(authKey, fullMessage);
     const { aesKey, aesIV } = await deriveAESKeyAndIV(authKey, msgKey);
-    const encrypted = await aesIgeEncrypt(plaintext, aesKey, aesIV);
+    const encrypted = await aesIgeEncrypt(fullMessage, aesKey, aesIV);
     const payload = new Uint8Array([...authKeyId, ...msgKey, ...encrypted]);
+
     socket.send(payload);
     setInput("");
   };
