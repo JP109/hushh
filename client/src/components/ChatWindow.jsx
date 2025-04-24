@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import MTProtoSocket from "../net/mtprotoSocket";
+import { register, encodeTLObject } from "../tl/tl.js";
 import {
   modPow,
   MODP_P,
@@ -12,10 +13,17 @@ import { computeMsgKey } from "../crypto/msgKey";
 import { deriveAESKeyAndIV } from "../crypto/keyDerivation";
 import { aesIgeEncrypt, aesIgeDecrypt } from "../crypto/aesIge";
 
+// Register TL schema
+register({
+  id: 0x5c4d7a1f,
+  name: "message",
+  args: [{ name: "text", type: "string" }],
+});
+
 export default function ChatWindow() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
-  const [connected, setConnected] = useState(false); // ✅ connection state
+  const [connected, setConnected] = useState(false);
   const [authKey, setAuthKey] = useState(null);
   const [authKeyId, setAuthKeyId] = useState(null);
   const authKeyRef = useRef(null);
@@ -38,7 +46,7 @@ export default function ChatWindow() {
         setAuthKey(shared);
         setAuthKeyId(shared.slice(-8));
         authKeyRef.current = shared;
-        setConnected(true); // ✅ enable Send button
+        setConnected(true);
         console.log("✅ Auth key established");
         return;
       }
@@ -50,7 +58,7 @@ export default function ChatWindow() {
       const { aesKey, aesIV } = await deriveAESKeyAndIV(authKey, msgKey);
       const decrypted = await aesIgeDecrypt(encrypted, aesKey, aesIV);
 
-      const tlBody = decrypted.subarray(32); // cleaner alias
+      const tlBody = decrypted.subarray(32);
       const constructorId =
         (tlBody[0] |
           (tlBody[1] << 8) |
@@ -59,7 +67,6 @@ export default function ChatWindow() {
         0;
 
       if (constructorId !== 0x73f1f8dc) {
-        // Not a container – treat as a standalone message
         const typeId = tlBody.slice(0, 4).reverse().toString("hex");
         if (typeId === "62d6b459") {
           const ackCount = new DataView(
@@ -145,12 +152,12 @@ export default function ChatWindow() {
 
   const sendMessage = async () => {
     const socket = window._mtproto;
-    const text = new TextEncoder().encode(input);
 
+    const tlPayload = encodeTLObject({ _: "message", text: input });
     const header = new Uint8Array(32);
-    const fullMessage = new Uint8Array(header.length + text.length);
+    const fullMessage = new Uint8Array(header.length + tlPayload.length);
     fullMessage.set(header);
-    fullMessage.set(text, 32);
+    fullMessage.set(tlPayload, 32);
 
     const msgKey = await computeMsgKey(authKeyRef.current, fullMessage);
     const { aesKey, aesIV } = await deriveAESKeyAndIV(
