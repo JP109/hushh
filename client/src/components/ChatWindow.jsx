@@ -30,37 +30,46 @@ export default function ChatWindow() {
     });
 
     socket.setOnMessage(async (data) => {
-      //   console.log("AAAA", data);
-      if (!authKeyRef.current) {
-        // First message = g_b
-        const g_b = bytesToBigInt(data);
-        const g_ab = modPow(g_b, a, MODP_P);
-        const shared = bigintToBytes(g_ab, 256);
-        setAuthKey(shared);
-        setAuthKeyId(shared.slice(-8));
-        authKeyRef.current = shared; // ✅ set ref
-        return;
-      }
+      const authKey = authKeyRef.current;
+      if (!authKey) return;
 
       const msgKey = data.slice(8, 24);
       const encrypted = data.slice(24);
-      const { aesKey, aesIV } = await deriveAESKeyAndIV(
-        authKeyRef.current,
-        msgKey
-      );
+
+      const { aesKey, aesIV } = await deriveAESKeyAndIV(authKey, msgKey);
       const decrypted = await aesIgeDecrypt(encrypted, aesKey, aesIV);
 
-      // strip TL header (32 bytes)
-      const serverSalt = decrypted.slice(0, 8);
-      const sessionId = decrypted.slice(8, 16);
-      const msgId = decrypted.slice(16, 24);
-      const seqno = decrypted.slice(24, 28);
-      const message = decrypted.slice(32);
+      // Strip outer TL header
+      const tlBody = decrypted.slice(32);
 
-      const clean = new TextDecoder()
-        .decode(message)
-        .replace(/[\u0000-\u001F\u007F-\uFFFF]+$/g, "");
-      setMessages((msgs) => [...msgs, clean]);
+      // Check constructor ID for msg_container
+      const constructor = tlBody.slice(0, 4).reverse().toString("hex");
+      if (constructor !== "73f1f8dc") {
+        console.error("❌ Not a msg_container:", constructor);
+        return;
+      }
+
+      const count = new DataView(tlBody.buffer).getUint32(4, true); // should be 1
+      const offset = 8;
+
+      const messages = [];
+
+      for (let i = 0; i < count; i++) {
+        const msgId = tlBody.slice(offset + 0, offset + 8);
+        const seqno = new DataView(tlBody.buffer).getUint32(offset + 8, true);
+        const bytes = new DataView(tlBody.buffer).getUint32(offset + 12, true);
+        const body = tlBody.slice(offset + 16, offset + 16 + bytes);
+
+        const text = new TextDecoder()
+          .decode(body)
+          .replace(/[\u0000-\u001F\u007F-\uFFFF]+$/g, "");
+        messages.push(text);
+
+        // advance offset
+        offset += 16 + bytes;
+      }
+
+      setMessages((prev) => [...prev, ...messages]);
     });
 
     window._mtproto = socket;
