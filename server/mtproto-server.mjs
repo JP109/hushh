@@ -58,45 +58,37 @@ wss.on("connection", (ws) => {
     const msgKey = buf.subarray(8, 24);
     const ciphertext = buf.subarray(24);
 
-    // Decrypt incoming message from client
     const { aesKey, aesIV } = deriveAESKeyAndIV(authKey, msgKey, false);
     const plaintext = aesIgeDecrypt(ciphertext, aesKey, aesIV);
 
-    // Extract TL header from client message
+    const clientMsgId = plaintext.readBigUInt64LE(16);
+
     const clientText = plaintext
       .subarray(32)
       .toString("utf-8")
       .replace(/[\u0000-\u001F\u007F-\uFFFF]+$/g, "");
     console.log("📩 Client says:", clientText);
 
-    // ------------------------------
-    // Create TL-style inner message
-    // ------------------------------
-
+    // Create reply message
     const replyBody = Buffer.from(`You said: ${clientText}`, "utf-8");
     const innerMsgId = generateMsgId();
     const innerSeqNo = client.seqno;
     client.seqno += 2;
 
     const innerHeader = Buffer.alloc(16);
-    innerHeader.writeBigUInt64LE(innerMsgId, 0); // msg_id
-    innerHeader.writeUInt32LE(innerSeqNo, 8); // seqno
-    innerHeader.writeUInt32LE(replyBody.length, 12); // body length
+    innerHeader.writeBigUInt64LE(innerMsgId, 0);
+    innerHeader.writeUInt32LE(innerSeqNo, 8);
+    innerHeader.writeUInt32LE(replyBody.length, 12);
+    const innerMessage = Buffer.concat([innerHeader, replyBody]);
 
-    const innerMessage = Buffer.concat([innerHeader, replyBody]); // 16-byte header + body
-
-    // ------------------------------
-    // 📦 Wrap in msg_container
-    // ------------------------------
-
-    const containerConstructor = Buffer.from("dcf8f173", "hex").reverse(); // #73f1f8dc
+    const containerConstructor = Buffer.from("dcf8f173", "hex").reverse();
     const count = Buffer.alloc(4);
-    count.writeUInt32LE(1, 0); // 1 message
-    const fullBody = Buffer.concat([containerConstructor, count, innerMessage]);
-
-    // ------------------------------
-    // 🚀 Wrap in outer TL header (salt, session_id, etc.)
-    // ------------------------------
+    count.writeUInt32LE(1, 0);
+    const containerBody = Buffer.concat([
+      containerConstructor,
+      count,
+      innerMessage,
+    ]);
 
     const outerMsgId = generateMsgId();
     const outerSeqno = client.seqno;
@@ -108,9 +100,7 @@ wss.on("connection", (ws) => {
     outerHeader.writeBigUInt64LE(outerMsgId, 16);
     outerHeader.writeUInt32LE(outerSeqno, 24);
 
-    const fullPlaintext = Buffer.concat([outerHeader, fullBody]);
-
-    // Encrypt and send
+    const fullPlaintext = Buffer.concat([outerHeader, containerBody]);
     const replyMsgKey = computeMsgKey(authKey, fullPlaintext);
     const { aesKey: aesKeyResp, aesIV: aesIVResp } = deriveAESKeyAndIV(
       authKey,
@@ -118,8 +108,57 @@ wss.on("connection", (ws) => {
       true
     );
     const encryptedReply = aesIgeEncrypt(fullPlaintext, aesKeyResp, aesIVResp);
+    ws.send(Buffer.concat([authKeyId, replyMsgKey, encryptedReply]));
 
-    const frame = Buffer.concat([authKeyId, replyMsgKey, encryptedReply]);
-    ws.send(frame);
+    // ✅ Send msgs_ack
+    const ackMsgId = generateMsgId();
+    const ackSeqno = client.seqno;
+    client.seqno += 2;
+
+    const ackConstructor = Buffer.from("59b4d662", "hex").reverse(); // #62d6b459
+    const vectorConstructor = Buffer.from("1cb5c415", "hex").reverse();
+    const ackCount = Buffer.alloc(4);
+    ackCount.writeUInt32LE(1, 0);
+    const ackMsgIdBuf = Buffer.alloc(8);
+    ackMsgIdBuf.writeBigUInt64LE(clientMsgId);
+
+    const ackBody = Buffer.concat([
+      ackConstructor,
+      vectorConstructor,
+      ackCount,
+      ackMsgIdBuf,
+    ]);
+
+    const ackHeader = Buffer.alloc(16);
+    ackHeader.writeBigUInt64LE(ackMsgId, 0);
+    ackHeader.writeUInt32LE(ackSeqno, 8);
+    ackHeader.writeUInt32LE(ackBody.length, 12);
+    const ackMessage = Buffer.concat([ackHeader, ackBody]);
+
+    const ackContainer = Buffer.concat([
+      containerConstructor,
+      count,
+      ackMessage,
+    ]);
+
+    const ackOuterMsgId = generateMsgId();
+    const ackOuterSeqno = client.seqno;
+    client.seqno += 2;
+
+    const ackOuterHeader = Buffer.alloc(32);
+    serverSalt.copy(ackOuterHeader, 0);
+    sessionId.copy(ackOuterHeader, 8);
+    ackOuterHeader.writeBigUInt64LE(ackOuterMsgId, 16);
+    ackOuterHeader.writeUInt32LE(ackOuterSeqno, 24);
+
+    const ackPlaintext = Buffer.concat([ackOuterHeader, ackContainer]);
+    const ackMsgKey = computeMsgKey(authKey, ackPlaintext);
+    const { aesKey: ackKey, aesIV: ackIV } = deriveAESKeyAndIV(
+      authKey,
+      ackMsgKey,
+      true
+    );
+    const encryptedAck = aesIgeEncrypt(ackPlaintext, ackKey, ackIV);
+    ws.send(Buffer.concat([authKeyId, ackMsgKey, encryptedAck]));
   });
 });

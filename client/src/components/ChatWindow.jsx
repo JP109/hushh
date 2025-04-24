@@ -15,6 +15,7 @@ import { aesIgeEncrypt, aesIgeDecrypt } from "../crypto/aesIge";
 export default function ChatWindow() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
+  const [connected, setConnected] = useState(false); // ✅ connection state
   const [authKey, setAuthKey] = useState(null);
   const [authKeyId, setAuthKeyId] = useState(null);
   const authKeyRef = useRef(null);
@@ -30,46 +31,113 @@ export default function ChatWindow() {
     });
 
     socket.setOnMessage(async (data) => {
-      const authKey = authKeyRef.current;
-      if (!authKey) return;
+      if (!authKeyRef.current) {
+        const g_b = bytesToBigInt(data);
+        const g_ab = modPow(g_b, a, MODP_P);
+        const shared = bigintToBytes(g_ab, 256);
+        setAuthKey(shared);
+        setAuthKeyId(shared.slice(-8));
+        authKeyRef.current = shared;
+        setConnected(true); // ✅ enable Send button
+        console.log("✅ Auth key established");
+        return;
+      }
 
+      const authKey = authKeyRef.current;
       const msgKey = data.slice(8, 24);
       const encrypted = data.slice(24);
 
       const { aesKey, aesIV } = await deriveAESKeyAndIV(authKey, msgKey);
       const decrypted = await aesIgeDecrypt(encrypted, aesKey, aesIV);
 
-      // Strip outer TL header
-      const tlBody = decrypted.slice(32);
+      const tlBody = decrypted.subarray(32); // cleaner alias
+      const constructorId =
+        (tlBody[0] |
+          (tlBody[1] << 8) |
+          (tlBody[2] << 16) |
+          (tlBody[3] << 24)) >>>
+        0;
 
-      // Check constructor ID for msg_container
-      const constructor = tlBody.slice(0, 4).reverse().toString("hex");
-      if (constructor !== "73f1f8dc") {
-        console.error("❌ Not a msg_container:", constructor);
+      if (constructorId !== 0x73f1f8dc) {
+        // Not a container – treat as a standalone message
+        const typeId = tlBody.slice(0, 4).reverse().toString("hex");
+        if (typeId === "62d6b459") {
+          const ackCount = new DataView(
+            tlBody.buffer,
+            tlBody.byteOffset + 8
+          ).getUint32(0, true);
+          const ackIds = [];
+          for (let j = 0; j < ackCount; j++) {
+            const ackMsgId = new DataView(
+              tlBody.buffer,
+              tlBody.byteOffset + 12 + j * 8
+            ).getBigUint64(0, true);
+            ackIds.push(ackMsgId.toString());
+          }
+          console.log("✅ Received single msgs_ack for:", ackIds);
+        } else {
+          const text = new TextDecoder()
+            .decode(tlBody)
+            .replace(/[\u0000-\u001F\u007F-\uFFFF]+$/g, "");
+          setMessages((prev) => [...prev, text]);
+        }
         return;
       }
 
-      const count = new DataView(tlBody.buffer).getUint32(4, true); // should be 1
-      const offset = 8;
-
+      const count = new DataView(tlBody.buffer, tlBody.byteOffset).getUint32(
+        4,
+        true
+      );
+      let offset = 8;
       const messages = [];
 
       for (let i = 0; i < count; i++) {
-        const msgId = tlBody.slice(offset + 0, offset + 8);
-        const seqno = new DataView(tlBody.buffer).getUint32(offset + 8, true);
-        const bytes = new DataView(tlBody.buffer).getUint32(offset + 12, true);
+        const msgId = new DataView(
+          tlBody.buffer,
+          tlBody.byteOffset + offset
+        ).getBigUint64(0, true);
+
+        const seqno = new DataView(
+          tlBody.buffer,
+          tlBody.byteOffset + offset + 8
+        ).getUint32(0, true);
+        const bytes = new DataView(
+          tlBody.buffer,
+          tlBody.byteOffset + offset + 12
+        ).getUint32(0, true);
+
         const body = tlBody.slice(offset + 16, offset + 16 + bytes);
 
-        const text = new TextDecoder()
-          .decode(body)
-          .replace(/[\u0000-\u001F\u007F-\uFFFF]+$/g, "");
-        messages.push(text);
+        const typeId = body.slice(0, 4).reverse().toString("hex");
+        if (typeId === "62d6b459") {
+          const ackCount = new DataView(
+            body.buffer,
+            body.byteOffset + 8
+          ).getUint32(0, true);
 
-        // advance offset
+          const ackIds = [];
+          for (let j = 0; j < ackCount; j++) {
+            const ackOffset = 12 + j * 8;
+            const ackMsgId = new DataView(
+              body.buffer,
+              body.byteOffset + 12 + j * 8
+            ).getBigUint64(0, true);
+            ackIds.push(ackMsgId.toString());
+          }
+          console.log("✅ Received msgs_ack for:", ackIds);
+        } else {
+          const text = new TextDecoder()
+            .decode(body)
+            .replace(/[\u0000-\u001F\u007F-\uFFFF]+$/g, "");
+          messages.push(text);
+        }
+
         offset += 16 + bytes;
       }
 
-      setMessages((prev) => [...prev, ...messages]);
+      if (messages.length > 0) {
+        setMessages((prev) => [...prev, ...messages]);
+      }
     });
 
     window._mtproto = socket;
@@ -79,15 +147,16 @@ export default function ChatWindow() {
     const socket = window._mtproto;
     const text = new TextEncoder().encode(input);
 
-    // Simulate TL header (placeholder salt/session/msg_id)
     const header = new Uint8Array(32);
-    // You can leave all-zero salt/session_id/msg_id for now
     const fullMessage = new Uint8Array(header.length + text.length);
     fullMessage.set(header);
     fullMessage.set(text, 32);
 
-    const msgKey = await computeMsgKey(authKey, fullMessage);
-    const { aesKey, aesIV } = await deriveAESKeyAndIV(authKey, msgKey);
+    const msgKey = await computeMsgKey(authKeyRef.current, fullMessage);
+    const { aesKey, aesIV } = await deriveAESKeyAndIV(
+      authKeyRef.current,
+      msgKey
+    );
     const encrypted = await aesIgeEncrypt(fullMessage, aesKey, aesIV);
     const payload = new Uint8Array([...authKeyId, ...msgKey, ...encrypted]);
 
@@ -103,7 +172,7 @@ export default function ChatWindow() {
         style={{ width: "100%", height: "300px" }}
       />
       <input value={input} onChange={(e) => setInput(e.target.value)} />
-      <button onClick={sendMessage} disabled={!authKey}>
+      <button onClick={sendMessage} disabled={!connected}>
         Send
       </button>
     </div>
