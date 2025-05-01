@@ -5,6 +5,7 @@ register({
   id: 0x5c4d7a1f,
   name: "message",
   args: [
+    { name: "from_user_id", type: "long" },
     { name: "to_user_id", type: "long" },
     { name: "text", type: "string" },
   ],

@@ -11,6 +11,7 @@ register({
   id: 0x5c4d7a1f,
   name: "message",
   args: [
+    { name: "from_user_id", type: "long" },
     { name: "to_user_id", type: "long" },
     { name: "text", type: "string" },
   ],
@@ -87,15 +88,20 @@ wss.on("connection", (ws, req) => {
       }
     } else segments.push(body);
 
-    for (const seg of segments) {
-      if (seg.readUInt32LE(0) !== 0x5c4d7a1f) continue;
-      const { to_user_id, text } = decodeTLObject(seg);
-      const destWs = clientsByUserId.get(Number(to_user_id));
+    for (const raw of segments) {
+      const buf = Buffer.from(raw);
+      if (buf.readUInt32LE(0) !== 0x5c4d7a1f) continue;
+      // full decode now that your schema has 3 args
+      const msg = decodeTLObject(buf);
+      const destId = Number(msg.to_user_id);
+      const destWs = clientsByUserId.get(destId);
       if (destWs && destWs.readyState === destWs.OPEN) {
-        sendToOne(clients.get(destWs), destWs, {
+        const destClient = clients.get(destWs);
+        sendToOne(destClient, destWs, {
           _: "message",
-          to_user_id,
-          text,
+          from_user_id: BigInt(userId),
+          to_user_id: msg.to_user_id,
+          text: msg.text,
         });
       }
     }
