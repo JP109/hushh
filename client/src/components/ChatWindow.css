@@ -1,0 +1,5 @@
+.chat-app-container {
+  display: flex;
+  padding: 20px;
+  gap: 20px; /* optional spacing between child divs */
+}

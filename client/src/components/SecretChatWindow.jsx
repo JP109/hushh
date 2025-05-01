@@ -32,7 +32,7 @@ register({
   args: [{ name: "msg_ids", type: "Vector<long>" }],
 });
 
-export default function ChatWindow() {
+export default function SecretChatWindow() {
   // --- AUTH STATES ---
   const [mode, setMode] = useState("login"); // "login" | "signup" | "chat"
   const [email, setEmail] = useState("");
@@ -307,6 +307,32 @@ export default function ChatWindow() {
     setMessages([]);
   }
 
+  // state to remember A’s ephemeral 'a'
+  const dhState = {};
+
+  // called on “Start Secret Chat” click
+  function startSecretChat(peerId) {
+    // 1) pick ephemeral a
+    const a = randomBigInt();
+    // 2) compute g^a mod p
+    const g_a = modPow(g, a, MODP_P);
+    console.log("DH: g =", g.toString());
+    console.log("DH: p =", MODP_P.toString());
+    console.log("DH: a (private) =", a.toString());
+    console.log("DH: g^a mod p =", g_a.toString());
+
+    // store 'a' until we get the response
+    dhState[peerId] = { a };
+
+    // 3) TL-encode and send to server for B
+    const tl = encodeTLObject({
+      _: "secret_chat_request",
+      to_user_id: BigInt(peerId),
+      g_a: bigintToBytes(g_a),
+    });
+    sendViaWebSocket(tl);
+  }
+
   // --- RENDER UI ---
   if (mode === "login" || mode === "signup") {
     return (
@@ -338,7 +364,7 @@ export default function ChatWindow() {
   return (
     <div style={{ padding: 20 }} className="chat-app-container">
       <div style={{ padding: 20 }}>
-        <h3>Select a contact to chat with:</h3>
+        <h3>Select a contact to secret chat with:</h3>
         <ul>
           {contacts.map((c) => (
             <li key={c.id}>
