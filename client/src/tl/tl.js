@@ -1,5 +1,15 @@
 const tlRegistry = new Map();
 
+// ─── Must match server’s schema ───────────────────────────────────────────────
+register({
+  id: 0x5c4d7a1f,
+  name: "message",
+  args: [
+    { name: "to_user_id", type: "long" },
+    { name: "text", type: "string" },
+  ],
+});
+
 export function register(schema) {
   const { id, name, args } = schema;
   tlRegistry.set(name, { id, args });
