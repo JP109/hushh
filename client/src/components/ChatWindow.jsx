@@ -1,4 +1,4 @@
-// src/components/ChatWindow.jsx
+/* src/components/ChatWindow.jsx */
 import React, { useState, useEffect, useRef } from "react";
 import { register, encodeTLObject, decodeTLObject } from "../tl/tl.js";
 import "./ChatWindow.css";
@@ -34,7 +34,7 @@ register({
 
 export default function ChatWindow() {
   // --- AUTH STATES ---
-  const [mode, setMode] = useState("login"); // "login" | "signup" | "chat"
+  const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [token, setToken] = useState(localStorage.getItem("token"));
@@ -55,17 +55,13 @@ export default function ChatWindow() {
   const [connected, setConnected] = useState(false);
   const [activeContactId, setActiveContactId] = useState(null);
   const activeContactRef = useRef(activeContactId);
-
-  // Keep the ref in sync whenever the state changes
   useEffect(() => {
     activeContactRef.current = activeContactId;
   }, [activeContactId]);
 
-  // If we already have token+user, go straight to chat
   useEffect(() => {
     if (token && user) setMode("chat");
   }, [token, user]);
-
   // --- SIGNUP / LOGIN HANDLERS ---
   async function signup() {
     const res = await fetch("http://localhost:3001/auth/signup", {
@@ -97,78 +93,60 @@ export default function ChatWindow() {
 
   // --- WEBSOCKET & CRYPTO HANDSHAKE ---
   useEffect(() => {
-    if (mode !== "chat") return;
-    if (!user || !token) return;
+    if (mode !== "chat" || !user || !token) return;
 
-    // // Prompt for a contact ID if not set
-    // let rid = activeContactId || Number(prompt("Enter recipient user ID:"));
-    // setActiveContactId(rid);
-
-    // Fetch list of all users, then prompt via UI
     fetch("http://localhost:3001/users", {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((r) => r.json())
-      .then((list) => {
-        // remove yourself from the list
-        setContacts(list.filter((u) => u.id !== user.id));
-      })
+      .then((list) => setContacts(list.filter((u) => u.id !== user.id)))
       .catch(console.error);
 
-    // Decide if we can resume (have an authKey stored)
     const storedKey = localStorage.getItem("authKey");
     const storedKeyId = localStorage.getItem("authKeyId");
     const resume = !!storedKey && !!storedKeyId;
 
-    // Open WS with both userId and token+resume flags
     const socket = new WebSocket(
       `ws://localhost:8080?userId=${user.id}&token=${token}&resume=${resume}`
     );
     socket.binaryType = "arraybuffer";
 
-    // Prepare our DH share in case we do a fresh handshake
     const a = randomBigInt();
     const gA = modPow(g, a, MODP_P);
     const gABytes = bigintToBytes(gA);
 
     socket.onopen = () => {
       if (!resume) {
-        // send DH share to server
         socket.send(gABytes);
       } else {
-        // rehydrate keys from localStorage
         authKeyRef.current = Buffer.from(storedKey, "base64");
         authKeyIdRef.current = Buffer.from(storedKeyId, "hex");
         setConnected(true);
-        console.log("🔄 Resumed session");
       }
     };
 
     socket.onmessage = async (evt) => {
       const data = new Uint8Array(evt.data);
-
-      // 1) If no authKey yet, this is the server's g^b
       if (!authKeyRef.current) {
         const gB = bytesToBigInt(data);
         const g_ab = modPow(gB, a, MODP_P);
         const authKey = bigintToBytes(g_ab, 256);
+        const authKeyId = authKey.slice(-8);
         authKeyRef.current = authKey;
-        authKeyIdRef.current = authKey.slice(-8);
-        // persist for future resumes
+        authKeyIdRef.current = authKeyId;
         localStorage.setItem(
           "authKey",
           Buffer.from(authKey).toString("base64")
         );
         localStorage.setItem(
           "authKeyId",
-          Buffer.from(authKey.slice(-8)).toString("hex")
+          Buffer.from(authKeyId).toString("hex")
         );
         setConnected(true);
-        console.log("✅ Auth key established");
         return;
       }
 
-      // 2) Otherwise decrypt an MTProto message
+      // Decrypting incoming MTProto
       const authKey = authKeyRef.current;
       const msgKey = data.slice(8, 24);
       const cipher = data.slice(24);
@@ -210,30 +188,12 @@ export default function ChatWindow() {
           }
         }
       }
-
-      // for (const raw of parts) {
-      //   const buf = Buffer.from(raw);
-      //   if (buf.readUInt32LE(0) !== 0x5c4d7a1f) continue;
-      //   const msg = decodeTLObject(buf);
-      //   // show every message whose to_user_id === me,
-      //   // prefixing with the sender’s ID/email
-      //   if (Number(msg.to_user_id) === user.id) {
-      //     setMessages((m) => [
-      //       ...m,
-      //       `From ${msg.from_user_id === user.id ? "You" : msg.from_user_id}: ${
-      //         msg.text
-      //       }`,
-      //     ]);
-      //   }
-      // }
     };
 
     socket.onclose = () => {
       setConnected(false);
-      console.warn("⚠️ WebSocket closed");
     };
     socket.onerror = (err) => {
-      console.error("❌ WS error", err);
       setConnected(false);
     };
 
@@ -282,7 +242,6 @@ export default function ChatWindow() {
 
     const payload = Buffer.concat([authKeyId, msgKey, cipher]);
     ws.send(payload);
-
     setMessages((m) => [...m, `You: ${input}`]);
     setInput("");
   };
@@ -307,28 +266,37 @@ export default function ChatWindow() {
     setMessages([]);
   }
 
-  // --- RENDER UI ---
   if (mode === "login" || mode === "signup") {
     return (
-      <div style={{ padding: 20 }}>
-        <h2>{mode === "login" ? "Log In" : "Sign Up"}</h2>
-        <input
-          placeholder="Email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-        />
-        <br />
-        <input
-          placeholder="Password"
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
-        <br />
-        <button onClick={mode === "login" ? login : signup}>
+      <div className="auth-container">
+        <h2 className="auth-title">
           {mode === "login" ? "Log In" : "Sign Up"}
-        </button>
-        <p onClick={() => setMode(mode === "login" ? "signup" : "login")}>
+        </h2>
+        <form className="auth-form" onSubmit={(e) => e.preventDefault()}>
+          <input
+            className="auth-input"
+            placeholder="Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+          <input
+            className="auth-input"
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          <button
+            className="auth-button"
+            onClick={mode === "login" ? login : signup}
+          >
+            {mode === "login" ? "Log In" : "Sign Up"}
+          </button>
+        </form>
+        <p
+          className="auth-toggle"
+          onClick={() => setMode(mode === "login" ? "signup" : "login")}
+        >
           {mode === "login" ? "Need an account?" : "Have an account?"}
         </p>
       </div>
@@ -336,58 +304,64 @@ export default function ChatWindow() {
   }
 
   return (
-    <div style={{ padding: 20 }} className="chat-app-container">
-      <div style={{ padding: 20 }}>
-        <h3>Select a contact to chat with:</h3>
-        <ul>
-          {contacts.map((c) => (
-            <li key={c.id}>
-              <button onClick={() => setActiveContactId(c.id)}>
-                {c.email} (ID: {c.id})
-              </button>
-            </li>
-          ))}
-        </ul>
-      </div>
-      <div>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            marginBottom: 10,
-          }}
-        >
-          <h3>Chat with User {activeContactId}</h3>
-          <div style={{ textAlign: "right" }}>
-            <div>
-              <strong>{user.email}</strong> (ID {user.id})
-            </div>
-            <button onClick={logout}>Logout</button>
-          </div>
-        </div>
-        <div
-          style={{
-            border: "1px solid #ccc",
-            height: 300,
-            overflowY: "scroll",
-            padding: 10,
-            marginBottom: 10,
-          }}
-        >
-          {messages.map((m, i) => (
-            <div key={i}>{m}</div>
-          ))}
-        </div>
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          style={{ width: "80%" }}
-        />
-        <button onClick={sendMessage} disabled={!connected}>
-          Send
+    <>
+      <div className="user-info">
+        <span className="user-email">
+          <strong>{user.email}</strong> (ID {user.id})
+        </span>
+        <button className="logout-button" onClick={logout}>
+          Logout
         </button>
       </div>
-    </div>
+      <div className="chat-app">
+        <aside className="chat-sidebar">
+          <h3 className="sidebar-title">Contacts</h3>
+          <ul className="contact-list">
+            {contacts.map((c) => (
+              <li key={c.id}>
+                <button
+                  className={`contact-button ${
+                    c.id === activeContactId ? "active" : ""
+                  }`}
+                  onClick={() => setActiveContactId(c.id)}
+                >
+                  {c.email} (ID: {c.id})
+                </button>
+              </li>
+            ))}
+          </ul>
+        </aside>
+
+        <section className="chat-window">
+          <header className="chat-header">
+            <h3>Chat with User {activeContactId}</h3>
+          </header>
+
+          <div className="message-container">
+            {messages.map((m, i) => (
+              <div key={i} className="message">
+                {m}
+              </div>
+            ))}
+          </div>
+
+          <footer className="chat-input-area">
+            <input
+              className="chat-input"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Type a message..."
+            />
+            <button
+              className="send-button"
+              onClick={sendMessage}
+              disabled={!connected}
+            >
+              Send
+            </button>
+          </footer>
+        </section>
+      </div>
+    </>
   );
 }

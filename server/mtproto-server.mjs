@@ -7,6 +7,7 @@ import { computeMsgKey } from "./crypto/msgKey.js";
 import { aesIgeEncrypt, aesIgeDecrypt } from "./crypto/aesIge.js";
 import { register, decodeTLObject, encodeTLObject } from "./tl/tl.js";
 
+// Register TL schema
 register({
   id: 0x5c4d7a1f,
   name: "message",
@@ -39,7 +40,6 @@ const wss = new WebSocketServer({ port: 8080 }, () => {
 wss.on("connection", (ws, req) => {
   const params = new URL(req.url, `ws://${req.headers.host}`).searchParams;
   const userId = Number(params.get("userId"));
-  console.log("🔌 Client connected, userId =", userId);
 
   const serverPriv = randomBigInt();
   const gB = modPow(g, serverPriv, MODP_P);
@@ -50,20 +50,17 @@ wss.on("connection", (ws, req) => {
     const g_ab = modPow(gA, serverPriv, MODP_P);
     const authKey = bigintToBytes(g_ab, 256);
     const authKeyId = authKey.subarray(256 - 8);
-    const serverSalt = randomBytes(8);
-    const sessionId = randomBytes(8);
 
     const state = {
       userId,
       authKey,
       authKeyId,
-      serverSalt,
-      sessionId,
+      serverSalt: randomBytes(8),
+      sessionId: randomBytes(8),
       seqno: 0,
     };
     clients.set(ws, state);
     clientsByUserId.set(userId, ws);
-    console.log("🔐 Auth key established for user", userId);
   });
 
   ws.on("message", (data) => {
@@ -111,7 +108,6 @@ wss.on("connection", (ws, req) => {
     const st = clients.get(ws);
     if (st) clientsByUserId.delete(st.userId);
     clients.delete(ws);
-    console.log("❌ Client disconnected:", st?.userId);
   });
 });
 
@@ -123,23 +119,20 @@ function sendToOne(destClient, destWs, msgObj) {
   destClient.seqno += 2;
   innerHdr.writeUInt32LE(body.length, 12);
   const innerMsg = Buffer.concat([innerHdr, body]);
-
   const containerHdr = Buffer.alloc(8);
   containerHdr.writeUInt32LE(0x73f1f8dc, 0);
   containerHdr.writeUInt32LE(1, 4);
   const container = Buffer.concat([containerHdr, innerMsg]);
-
   const hdr = Buffer.alloc(32);
   destClient.serverSalt.copy(hdr, 0);
   destClient.sessionId.copy(hdr, 8);
   hdr.writeBigUInt64LE(generateMsgId(), 16);
   hdr.writeUInt32LE(destClient.seqno, 24);
   destClient.seqno += 2;
-
   const full = Buffer.concat([hdr, container]);
+
   const msgKey = computeMsgKey(destClient.authKey, full);
   const { aesKey, aesIV } = deriveAESKeyAndIV(destClient.authKey, msgKey, true);
   const encrypted = aesIgeEncrypt(full, aesKey, aesIV);
-
   destWs.send(Buffer.concat([destClient.authKeyId, msgKey, encrypted]));
 }
