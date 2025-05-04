@@ -83,7 +83,14 @@ export default function ChatWindow() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
     });
-    const { token: tk, user: u } = await res.json();
+    const body = await res.json();
+    if (!res.ok) {
+      alert(body.error);
+      return;
+    }
+
+    // only on 200…
+    const { token: tk, user: u } = body;
     localStorage.setItem("token", tk);
     localStorage.setItem("user", JSON.stringify(u));
     setToken(tk);
